@@ -598,6 +598,66 @@ public sealed record Document<T>(
 
 public sealed record TableDefinition<T>(string Name);
 
+public static class Schema
+{
+    public static DocumentTableSchema<T> DocumentTable<T>(TableDefinition<T> table)
+        => new(table.Name);
+
+    public static DocumentTableSchema<T> DocumentTable<T>(string table)
+        => new(table);
+}
+
+public sealed class DocumentTableSchema<T>
+{
+    private readonly string _table;
+    private readonly List<string> _generatedColumns = [];
+    private readonly List<string> _indexes = [];
+
+    internal DocumentTableSchema(string table)
+    {
+        _table = Sql.Identifier(table);
+    }
+
+    public DocumentTableSchema<T> Generated<TValue>(string column, JsonPath<T, TValue> path, string type = "text")
+    {
+        _generatedColumns.Add($"{Sql.Identifier(column)} {Sql.ColumnType(type)} generated always as (json_extract(body, {Sql.Literal(path.Path)})) stored");
+        return this;
+    }
+
+    public DocumentTableSchema<T> Index(string name, params string[] columns)
+    {
+        if (columns.Length == 0)
+        {
+            throw new ArgumentException("Index must include at least one column.", nameof(columns));
+        }
+
+        _indexes.Add($"create index if not exists {Sql.Identifier(name)} on {_table}({string.Join(", ", columns.Select(Sql.Identifier))});");
+        return this;
+    }
+
+    public override string ToString()
+    {
+        var columns = new List<string>
+        {
+            "id text primary key",
+            "version integer not null default 1",
+            "body text not null check (json_valid(body))",
+            "created_at text not null",
+            "updated_at text not null"
+        };
+
+        columns.AddRange(_generatedColumns);
+
+        return $"""
+            create table if not exists {_table} (
+                {string.Join(",\n    ", columns)}
+            );
+
+            {string.Join("\n", _indexes)}
+            """;
+    }
+}
+
 public static class JsonPath
 {
     public static JsonObjectPath<TDocument> For<TDocument>() => JsonObjectPath<TDocument>.Root;
@@ -673,6 +733,27 @@ internal static class Sql
 
         return "\"" + value.Replace("\"", "\"\"", StringComparison.Ordinal) + "\"";
     }
+
+    public static string ColumnType(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            throw new ArgumentException("SQL column type cannot be empty.", nameof(value));
+        }
+
+        foreach (var ch in value)
+        {
+            if (!char.IsAsciiLetterOrDigit(ch) && ch != '_' && ch != ' ' && ch != '(' && ch != ')')
+            {
+                throw new ArgumentException($"'{value}' is not a valid SQL column type.", nameof(value));
+            }
+        }
+
+        return value;
+    }
+
+    public static string Literal(string value)
+        => "'" + value.Replace("'", "''", StringComparison.Ordinal) + "'";
 }
 
 internal static class Clock

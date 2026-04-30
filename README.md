@@ -5,18 +5,11 @@ Stateful is a tiny SQLite document store for C# applications. It stores typed ob
 Normalize later. Index what you query. Keep state simple.
 
 ```csharp
-var migrations = new Migrations().Add(1, """
-    create table customers (
-        id text primary key,
-        version integer not null default 1,
-        body text not null check (json_valid(body)),
-        created_at text not null,
-        updated_at text not null,
-        name text generated always as (json_extract(body, '$.name')) stored
-    );
-
-    create index ix_customers_name on customers(name);
-    """);
+var migrations = new Migrations().Add(1, Schema
+    .DocumentTable(Tables.Customers)
+    .Generated("name", CustomerPaths.Name)
+    .Index("ix_customers_name", "name")
+    .ToString());
 
 await using var db = await TinyStore.Open("app.db", migrations);
 
@@ -125,3 +118,15 @@ var patched = await customers.Patch("customer/123")
     .Set(CustomerPaths.Name, "Acme Corp")
     .Commit();
 ```
+
+Migrations can use typed paths too. The generated column is still SQLite, but the JSON path is not duplicated as a string:
+
+```csharp
+migrations.Add(2, Schema
+    .DocumentTable(Tables.Customers)
+    .Generated("primary_email", CustomerPaths.PrimaryEmail)
+    .Index("ix_customers_primary_email", "primary_email")
+    .ToString());
+```
+
+The optional analyzer reports an informational diagnostic when patch code uses raw JSON path strings where a typed symbol would give the compiler more to work with.

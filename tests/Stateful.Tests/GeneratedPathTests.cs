@@ -8,16 +8,11 @@ public sealed class GeneratedPathTests
     [Fact]
     public async Task GeneratedPathsCanPatchDocumentFields()
     {
-        var migrations = new Migrations().Add(1, """
-            create table generated_customers (
-                id text primary key,
-                version integer not null default 1,
-                body text not null check (json_valid(body)),
-                created_at text not null,
-                updated_at text not null,
-                display_name text generated always as (json_extract(body, '$.display_name')) stored
-            );
-            """);
+        var migrations = new Migrations().Add(1, Schema
+            .DocumentTable(Tables.GeneratedCustomers)
+            .Generated("display_name", GeneratedCustomerPaths.DisplayName)
+            .Index("ix_generated_customers_display_name", "display_name")
+            .ToString());
 
         await using var db = await TinyStore.Open("Data Source=:memory:", migrations);
         var customers = db.Table<GeneratedCustomer>("generated_customers");
@@ -35,6 +30,11 @@ public sealed class GeneratedPathTests
         Assert.Equal("Acme Corp", customer!.DisplayName);
         Assert.Equal("Net15", customer.Billing.Terms);
     }
+}
+
+public static class Tables
+{
+    public static readonly TableDefinition<GeneratedCustomer> GeneratedCustomers = new("generated_customers");
 }
 
 [GenerateJsonPaths]
