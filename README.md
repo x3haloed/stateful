@@ -20,7 +20,7 @@ var migrations = new Migrations().Add(1, """
 
 await using var db = await TinyStore.Open("app.db", migrations);
 
-var customers = db.Table<Customer>("customers");
+var customers = db.In(Tables.Customers);
 
 await customers.Put("customer/123", new Customer
 {
@@ -29,7 +29,7 @@ await customers.Put("customer/123", new Customer
 });
 
 await customers.Patch("customer/123")
-    .Set("$.name", "Acme Corp")
+    .Set(CustomerPaths.Name, "Acme Corp")
     .Commit();
 
 var customer = await customers.Get("customer/123");
@@ -38,6 +38,43 @@ var matches = await customers.Query("""
     where name like $name
     order by updated_at desc
     """, new { name = "%Acme%" });
+```
+
+Typed paths are just symbols over JSON paths. They give the compiler enough shape to reject wrong document/value combinations without turning Stateful into an ORM:
+
+```csharp
+public static class Tables
+{
+    public static readonly TableDefinition<Customer> Customers = new("customers");
+}
+
+public static class CustomerPaths
+{
+    private static readonly JsonObjectPath<Customer> Root = JsonPath.For<Customer>();
+
+    public static readonly JsonPath<Customer, string> Name = Root.Field<string>("name");
+    public static readonly JsonPath<Customer, string?> PrimaryEmail = Root.Field<string?>("primaryEmail");
+
+    public static class Billing
+    {
+        private static readonly JsonObjectPath<Customer> Path = Root.Object("billing");
+
+        public static readonly JsonPath<Customer, string> Terms = Path.Field<string>("terms");
+    }
+}
+
+await customers.Patch("customer/123")
+    .Set(CustomerPaths.Name, "Acme Corp")
+    .Set(CustomerPaths.Billing.Terms, "Net30")
+    .Commit();
+```
+
+The string-path API remains available when you need the escape hatch:
+
+```csharp
+await customers.Patch("customer/123")
+    .Set("$.experimental.newShape", new { enabled = true })
+    .Commit();
 ```
 
 The database is still SQLite. Query with SQL when SQL earns its keep.

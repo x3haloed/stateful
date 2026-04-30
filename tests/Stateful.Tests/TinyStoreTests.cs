@@ -32,7 +32,7 @@ public sealed class TinyStoreTests
         await using var db = await OpenStore();
         var customers = db.Table<Customer>("customers");
 
-        await customers.Put("customer/123", new Customer("customer/123", "Acme", null, null));
+        await customers.Put("customer/123", new Customer("customer/123", "Acme", null, new Billing("Net30")));
         var envelope = await customers.GetEnvelope("customer/123");
 
         var replaced = await customers.Replace(
@@ -69,6 +69,42 @@ public sealed class TinyStoreTests
 
         Assert.Single(matches);
         Assert.Equal("Acme", matches[0].Name);
+    }
+
+    [Fact]
+    public async Task TypedPathsPatchDocumentsWithoutStringPathsAtCallSite()
+    {
+        await using var db = await OpenStore();
+        var customers = db.In(Tables.Customers);
+
+        await customers.Put("customer/123", new Customer("customer/123", "Acme", null, new Billing("Net30")));
+        await customers.Patch("customer/123")
+            .Set(CustomerPaths.Name, "Acme Corp")
+            .Set(CustomerPaths.PrimaryEmail, "ops@acme.test")
+            .Set(CustomerPaths.Billing.Terms, "Net15")
+            .Commit();
+
+        var customer = await customers.Get("customer/123");
+
+        Assert.Equal("Acme Corp", customer!.Name);
+        Assert.Equal("ops@acme.test", customer.PrimaryEmail);
+        Assert.Equal("Net15", customer.Billing!.Terms);
+    }
+
+    [Fact]
+    public async Task TypedPatchCallbackUsesDocumentSpecificPaths()
+    {
+        await using var db = await OpenStore();
+
+        await db.Put("customers", "customer/123", new Customer("customer/123", "Acme", "ops@acme.test", null));
+        await db.Patch<Customer>("customers", "customer/123", patch => patch
+            .Set(CustomerPaths.Name, "Acme Ltd")
+            .Remove(CustomerPaths.PrimaryEmail));
+
+        var customer = await db.Get<Customer>("customers", "customer/123");
+
+        Assert.Equal("Acme Ltd", customer!.Name);
+        Assert.Null(customer.PrimaryEmail);
     }
 
     [Fact]
@@ -143,4 +179,24 @@ public sealed class TinyStoreTests
     private sealed record Billing(string Terms);
 
     private sealed record Invoice(string Id, string CustomerId, string Status);
+
+    private static class Tables
+    {
+        public static readonly TableDefinition<Customer> Customers = new("customers");
+    }
+
+    private static class CustomerPaths
+    {
+        private static readonly JsonObjectPath<Customer> Root = JsonPath.For<Customer>();
+
+        public static readonly JsonPath<Customer, string> Name = Root.Field<string>("name");
+        public static readonly JsonPath<Customer, string?> PrimaryEmail = Root.Field<string?>("primaryEmail");
+
+        public static class Billing
+        {
+            private static readonly JsonObjectPath<Customer> Path = Root.Object("billing");
+
+            public static readonly JsonPath<Customer, string> Terms = Path.Field<string>("terms");
+        }
+    }
 }

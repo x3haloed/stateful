@@ -71,6 +71,13 @@ public sealed class TinyStore : IAsyncDisposable
         CancellationToken ct = default)
         => await Table<object>(table).Patch(id, patch, ct);
 
+    public async Task Patch<T>(
+        string table,
+        string id,
+        Action<JsonPatchBuilder<T>> patch,
+        CancellationToken ct = default)
+        => await Table<T>(table).Patch(id, patch, ct);
+
     public async Task<IReadOnlyList<T>> Query<T>(
         string sql,
         object? args = null,
@@ -173,6 +180,8 @@ public sealed class TinyStore : IAsyncDisposable
     internal string Serialize<T>(T document) => JsonSerializer.Serialize(document, _json);
 
     internal JsonPatchBuilder CreatePatchBuilder() => new(_json);
+
+    internal JsonPatchBuilder<T> CreatePatchBuilder<T>() => new(CreatePatchBuilder());
 
     internal T Deserialize<T>(string json) => JsonSerializer.Deserialize<T>(json, _json)
         ?? throw new InvalidOperationException($"Could not deserialize JSON as {typeof(T).Name}.");
@@ -327,6 +336,13 @@ public sealed class Table<T>
         await CommitPatch(id, builder.Build(), ct);
     }
 
+    public async Task Patch(string id, Action<JsonPatchBuilder<T>> patch, CancellationToken ct = default)
+    {
+        var builder = _store.CreatePatchBuilder<T>();
+        patch(builder);
+        await CommitPatch(id, builder.Build(), ct);
+    }
+
     public async Task<IReadOnlyList<T>> Query(string sql, object? args = null, CancellationToken ct = default)
     {
         var trimmed = sql.TrimStart();
@@ -419,9 +435,21 @@ public sealed class JsonPatch<T>
         return this;
     }
 
+    public JsonPatch<T> Set<TValue>(JsonPath<T, TValue> path, TValue value)
+    {
+        _builder.Set(path.Path, value);
+        return this;
+    }
+
     public JsonPatch<T> Remove(string path)
     {
         _builder.Remove(path);
+        return this;
+    }
+
+    public JsonPatch<T> Remove<TValue>(JsonPath<T, TValue> path)
+    {
+        _builder.Remove(path.Path);
         return this;
     }
 
@@ -453,6 +481,78 @@ public sealed class JsonPatchBuilder
     internal IReadOnlyList<JsonPatchOperation> Build() => _operations;
 }
 
+public sealed class JsonPatchBuilder<TDocument>
+{
+    private readonly JsonPatchBuilder _inner;
+
+    internal JsonPatchBuilder(JsonPatchBuilder inner)
+    {
+        _inner = inner;
+    }
+
+    public JsonPatchBuilder<TDocument> Set<TValue>(JsonPath<TDocument, TValue> path, TValue value)
+    {
+        _inner.Set(path.Path, value);
+        return this;
+    }
+
+    public JsonPatchBuilder<TDocument> Remove<TValue>(JsonPath<TDocument, TValue> path)
+    {
+        _inner.Remove(path.Path);
+        return this;
+    }
+
+    internal IReadOnlyList<JsonPatchOperation> Build() => _inner.Build();
+}
+
+public readonly record struct JsonPath<TDocument, TValue>(string Path)
+{
+    public static JsonPath<TDocument, TValue> Create(string path) => new(path);
+
+    public override string ToString() => Path;
+}
+
+public readonly record struct JsonObjectPath<TDocument>(string Path)
+{
+    public JsonPath<TDocument, TValue> Field<TValue>(string name)
+        => new(JsonPath.Join(Path, name));
+
+    public JsonObjectPath<TDocument> Object(string name)
+        => new(JsonPath.Join(Path, name));
+
+    public JsonArrayPath<TDocument, TItem> Array<TItem>(string name)
+        => new(JsonPath.Join(Path, name));
+
+    public static JsonObjectPath<TDocument> Root => new("$");
+
+    public override string ToString() => Path;
+}
+
+public readonly record struct JsonArrayPath<TDocument, TItem>(string Path)
+{
+    public JsonObjectPath<TDocument> At(int index)
+    {
+        if (index < 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(index), "JSON array index cannot be negative.");
+        }
+
+        return new JsonObjectPath<TDocument>($"{Path}[{index}]");
+    }
+
+    public JsonPath<TDocument, TItem> AtValue(int index)
+    {
+        if (index < 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(index), "JSON array index cannot be negative.");
+        }
+
+        return new JsonPath<TDocument, TItem>($"{Path}[{index}]");
+    }
+
+    public override string ToString() => Path;
+}
+
 public sealed record Document<T>(
     string Id,
     long Version,
@@ -461,6 +561,29 @@ public sealed record Document<T>(
     DateTimeOffset UpdatedAt);
 
 public sealed record TableDefinition<T>(string Name);
+
+public static class JsonPath
+{
+    public static JsonObjectPath<TDocument> For<TDocument>() => JsonObjectPath<TDocument>.Root;
+
+    public static JsonPath<TDocument, TValue> Create<TDocument, TValue>(string path)
+        => new(path);
+
+    internal static string Join(string parent, string member)
+    {
+        if (string.IsNullOrWhiteSpace(member))
+        {
+            throw new ArgumentException("JSON path member cannot be empty.", nameof(member));
+        }
+
+        if (member.Any(ch => ch is '.' or '[' or ']' or '"' or '\''))
+        {
+            throw new ArgumentException($"'{member}' is not a simple JSON path member.", nameof(member));
+        }
+
+        return parent == "$" ? "$." + member : parent + "." + member;
+    }
+}
 
 public sealed class Migrations
 {
