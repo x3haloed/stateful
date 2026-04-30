@@ -5,6 +5,21 @@ using Microsoft.Data.Sqlite;
 
 namespace Stateful;
 
+[AttributeUsage(AttributeTargets.Class | AttributeTargets.Struct, Inherited = false)]
+public sealed class GenerateJsonPathsAttribute : Attribute
+{
+    public GenerateJsonPathsAttribute()
+    {
+    }
+
+    public GenerateJsonPathsAttribute(string className)
+    {
+        ClassName = className;
+    }
+
+    public string? ClassName { get; }
+}
+
 public sealed class TinyStore : IAsyncDisposable
 {
     private readonly SqliteConnection _connection;
@@ -64,14 +79,14 @@ public sealed class TinyStore : IAsyncDisposable
     public async Task Delete(string table, string id, CancellationToken ct = default)
         => await Table<object>(table).Delete(id, ct);
 
-    public async Task Patch(
+    public async Task<bool> Patch(
         string table,
         string id,
         Action<JsonPatchBuilder> patch,
         CancellationToken ct = default)
         => await Table<object>(table).Patch(id, patch, ct);
 
-    public async Task Patch<T>(
+    public async Task<bool> Patch<T>(
         string table,
         string id,
         Action<JsonPatchBuilder<T>> patch,
@@ -329,18 +344,18 @@ public sealed class Table<T>
 
     public JsonPatch<T> Patch(string id) => new(this, id);
 
-    public async Task Patch(string id, Action<JsonPatchBuilder> patch, CancellationToken ct = default)
+    public async Task<bool> Patch(string id, Action<JsonPatchBuilder> patch, CancellationToken ct = default)
     {
         var builder = _store.CreatePatchBuilder();
         patch(builder);
-        await CommitPatch(id, builder.Build(), ct);
+        return await CommitPatch(id, builder.Build(), expectedVersion: null, ct);
     }
 
-    public async Task Patch(string id, Action<JsonPatchBuilder<T>> patch, CancellationToken ct = default)
+    public async Task<bool> Patch(string id, Action<JsonPatchBuilder<T>> patch, CancellationToken ct = default)
     {
         var builder = _store.CreatePatchBuilder<T>();
         patch(builder);
-        await CommitPatch(id, builder.Build(), ct);
+        return await CommitPatch(id, builder.Build(), expectedVersion: null, ct);
     }
 
     public async Task<IReadOnlyList<T>> Query(string sql, object? args = null, CancellationToken ct = default)
@@ -353,14 +368,26 @@ public sealed class Table<T>
         return await _store.Query<T>(statement, args, ct);
     }
 
-    internal async Task CommitPatch(string id, IReadOnlyList<JsonPatchOperation> operations, CancellationToken ct)
+    internal async Task<bool> CommitPatch(
+        string id,
+        IReadOnlyList<JsonPatchOperation> operations,
+        long? expectedVersion,
+        CancellationToken ct)
     {
         if (operations.Count == 0)
         {
-            return;
+            return true;
         }
 
         var parameters = new Dictionary<string, object?> { ["id"] = id, ["updatedAt"] = Clock.Now() };
+        var versionPredicate = "";
+
+        if (expectedVersion is not null)
+        {
+            parameters["expectedVersion"] = expectedVersion.Value;
+            versionPredicate = " and version = $expectedVersion";
+        }
+
         var expression = "body";
         var setValues = new List<string>();
         var removePaths = new List<string>();
@@ -399,9 +426,10 @@ public sealed class Table<T>
                 version = version + 1,
                 updated_at = $updatedAt
             where id = $id
+            {versionPredicate}
             """, parameters);
 
-        await command.ExecuteNonQueryAsync(ct);
+        return await command.ExecuteNonQueryAsync(ct) == 1;
     }
 
     private async Task InsertCore(string id, T document, CancellationToken ct)
@@ -421,6 +449,7 @@ public sealed class JsonPatch<T>
     private readonly Table<T> _table;
     private readonly string _id;
     private readonly JsonPatchBuilder _builder;
+    private long? _expectedVersion;
 
     internal JsonPatch(Table<T> table, string id)
     {
@@ -453,7 +482,14 @@ public sealed class JsonPatch<T>
         return this;
     }
 
-    public Task Commit(CancellationToken ct = default) => _table.CommitPatch(_id, _builder.Build(), ct);
+    public JsonPatch<T> IfVersion(long expectedVersion)
+    {
+        _expectedVersion = expectedVersion;
+        return this;
+    }
+
+    public Task<bool> Commit(CancellationToken ct = default)
+        => _table.CommitPatch(_id, _builder.Build(), _expectedVersion, ct);
 }
 
 public sealed class JsonPatchBuilder

@@ -69,6 +69,23 @@ await customers.Patch("customer/123")
     .Commit();
 ```
 
+Path catalogs can also be generated:
+
+```csharp
+[GenerateJsonPaths]
+public sealed record Customer(
+    string Id,
+    string Name,
+    Billing Billing);
+
+public sealed record Billing(string Terms);
+
+await customers.Patch("customer/123")
+    .Set(CustomerPaths.Name, "Acme Corp")
+    .Set(CustomerPaths.Billing.Terms, "Net30")
+    .Commit();
+```
+
 The string-path API remains available when you need the escape hatch:
 
 ```csharp
@@ -98,4 +115,13 @@ var replaced = await customers.Replace(
     "customer/123",
     expectedVersion: envelope!.Version,
     document: envelope.Body with { Name = "Acme Inc" });
+```
+
+Patches can use the same optimistic concurrency guard:
+
+```csharp
+var patched = await customers.Patch("customer/123")
+    .IfVersion(envelope.Version)
+    .Set(CustomerPaths.Name, "Acme Corp")
+    .Commit();
 ```

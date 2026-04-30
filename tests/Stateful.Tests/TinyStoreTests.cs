@@ -108,6 +108,43 @@ public sealed class TinyStoreTests
     }
 
     [Fact]
+    public async Task PatchCanUseExpectedVersion()
+    {
+        await using var db = await OpenStore();
+        var customers = db.In(Tables.Customers);
+
+        await customers.Put("customer/123", new Customer("customer/123", "Acme", null, null));
+        var envelope = await customers.GetEnvelope("customer/123");
+
+        var patched = await customers.Patch("customer/123")
+            .IfVersion(envelope!.Version)
+            .Set(CustomerPaths.Name, "Acme Corp")
+            .Commit();
+
+        var stalePatch = await customers.Patch("customer/123")
+            .IfVersion(envelope.Version)
+            .Set(CustomerPaths.Name, "Stale")
+            .Commit();
+
+        var current = await customers.GetEnvelope("customer/123");
+
+        Assert.True(patched);
+        Assert.False(stalePatch);
+        Assert.Equal("Acme Corp", current!.Body.Name);
+        Assert.Equal(2, current.Version);
+    }
+
+    [Fact]
+    public async Task CallbackPatchReturnsWhetherItModifiedARow()
+    {
+        await using var db = await OpenStore();
+
+        var patched = await db.Patch<Customer>("customers", "missing", patch => patch.Set(CustomerPaths.Name, "Nope"));
+
+        Assert.False(patched);
+    }
+
+    [Fact]
     public async Task MigrationsRunOnce()
     {
         var migrations = new Migrations()
